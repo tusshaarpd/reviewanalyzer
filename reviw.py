@@ -16,7 +16,7 @@ def scrape_reviews(url):
 
 def analyze_sentiment(reviews):
     """Analyzes sentiment of reviews using an open-source AI model."""
-    sentiment_pipeline = pipeline("sentiment-analysis")
+    sentiment_pipeline = pipeline("sentiment-analysis", model="distilbert-base-uncased-finetuned-sst-2-english")
     results = sentiment_pipeline(reviews)
     
     positives = [rev for rev, res in zip(reviews, results) if res['label'] == 'POSITIVE']
@@ -25,6 +25,7 @@ def analyze_sentiment(reviews):
     return positives, negatives
 
 def main():
+    st.set_page_config(page_title="Reviews Analyzer", layout="wide")
     st.title("Reviews Analyzer - AI-powered Sentiment Analysis")
     st.write("Enter URLs containing reviews about a company to get insights.")
     
@@ -32,16 +33,17 @@ def main():
     
     if st.button("Analyze Reviews"):
         if url:
-            reviews = scrape_reviews(url)
-            positives, negatives = analyze_sentiment(reviews)
-            
-            st.subheader("Positive Reviews:")
-            for review in positives:
-                st.success(review)
-            
-            st.subheader("Negative Reviews:")
-            for review in negatives:
-                st.error(review)
+            with st.spinner("Fetching and analyzing reviews..."):
+                reviews = scrape_reviews(url)
+                positives, negatives = analyze_sentiment(reviews)
+                
+                st.subheader("Positive Reviews:")
+                for review in positives:
+                    st.success(review)
+                
+                st.subheader("Negative Reviews:")
+                for review in negatives:
+                    st.error(review)
         else:
             st.warning("Please enter a valid URL.")
 
