@@ -8,4 +8,4 @@ torchaudio
 sentencepiece
 scikit-learn
 pandas
-numpy
+numpy<2
