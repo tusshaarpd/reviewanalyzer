@@ -7,10 +7,32 @@ import nltk
 from nltk.tokenize import sent_tokenize
 from collections import Counter
 import plotly.express as px
+import os
 
-# Download required NLTK data
-nltk.download('punkt')
-nltk.download('averaged_perceptron_tagger')
+# Create a custom directory for NLTK data
+def setup_nltk():
+    try:
+        # Create a directory in the user's home directory
+        nltk_data_dir = os.path.expanduser('~/nltk_data')
+        if not os.path.exists(nltk_data_dir):
+            os.makedirs(nltk_data_dir)
+        
+        # Set NLTK data path
+        nltk.data.path.append(nltk_data_dir)
+        
+        # Download required NLTK data
+        try:
+            nltk.download('punkt', download_dir=nltk_data_dir)
+            nltk.download('averaged_perceptron_tagger', download_dir=nltk_data_dir)
+            return True
+        except Exception as e:
+            st.error(f"Error downloading NLTK data: {str(e)}")
+            st.info("Please run this command manually before starting the application: python -m nltk.downloader punkt averaged_perceptron_tagger")
+            return False
+            
+    except Exception as e:
+        st.error(f"Error setting up NLTK: {str(e)}")
+        return False
 
 def scrape_reviews(url):
     """
@@ -49,6 +71,10 @@ def get_key_phrases(reviews):
 
 def main():
     st.title("Review Analyzer")
+    
+    # Setup NLTK data
+    if not setup_nltk():
+        st.stop()
     
     # Add company logo/name input
     company_name = st.text_input("Enter Company Name:")
