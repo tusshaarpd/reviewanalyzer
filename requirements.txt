@@ -1,5 +1,5 @@
 streamlit
 requests
 beautifulsoup4
-transformers
-torch
+transformers==4.37.2
+torch==2.1.2
