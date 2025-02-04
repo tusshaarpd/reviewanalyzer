@@ -12,147 +12,250 @@ import time
 import random
 from fake_useragent import UserAgent
 import re
+from urllib.parse import urlparse
+
+class ReviewScraper:
+    def __init__(self):
+        self.ua = UserAgent()
+        
+    def get_headers(self):
+        return {
+            'User-Agent': self.ua.random,
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.5',
+            'Connection': 'keep-alive',
+        }
+
+    def find_review_elements(self, soup):
+        """
+        Smart detection of review elements using common patterns
+        """
+        review_patterns = {
+            'class_patterns': [
+                r'review',
+                r'comment',
+                r'feedback',
+                r'testimonial',
+                r'rating',
+                r'customer.*response'
+            ],
+            'text_patterns': [
+                r'stars?',
+                r'rated',
+                r'rating',
+                r'review',
+                r'feedback'
+            ]
+        }
+        
+        potential_reviews = []
+        
+        # Search by class patterns
+        for pattern in review_patterns['class_patterns']:
+            elements = soup.find_all(class_=re.compile(pattern, re.I))
+            potential_reviews.extend(elements)
+        
+        # Search by text content
+        for pattern in review_patterns['text_patterns']:
+            elements = soup.find_all(text=re.compile(pattern, re.I))
+            potential_reviews.extend([elem.parent for elem in elements if elem.parent])
+        
+        # Search common container elements
+        container_tags = ['article', 'div', 'section', 'li']
+        for tag in container_tags:
+            elements = soup.find_all(tag, class_=True)
+            potential_reviews.extend([elem for elem in elements if any(
+                re.search(pattern, str(elem.get('class', '')), re.I) 
+                for pattern in review_patterns['class_patterns']
+            )])
+        
+        return list(set(potential_reviews))
+
+    def extract_text(self, element):
+        """
+        Extract review text from an element
+        """
+        # Try to find paragraph or text content
+        text_elements = element.find_all(['p', 'span', 'div'], class_=re.compile(r'text|content|description', re.I))
+        if not text_elements:
+            text_elements = [element]
+        
+        texts = []
+        for elem in text_elements:
+            text = elem.get_text(strip=True)
+            if len(text) > 20:  # Minimum length to be considered a review
+                texts.append(text)
+        
+        return ' '.join(texts) if texts else None
+
+    def extract_rating(self, element):
+        """
+        Extract rating from various formats
+        """
+        rating = None
+        
+        # Look for common rating patterns
+        rating_patterns = [
+            (r'(\d+(?:\.\d+)?)\s*(?:star|★|out of \d+)', lambda x: float(x)),
+            (r'rated\s*(\d+(?:\.\d+)?)', lambda x: float(x)),
+            (r'rating:\s*(\d+(?:\.\d+)?)', lambda x: float(x))
+        ]
+        
+        element_text = element.get_text()
+        for pattern, converter in rating_patterns:
+            match = re.search(pattern, element_text, re.I)
+            if match:
+                try:
+                    rating = converter(match.group(1))
+                    break
+                except:
+                    continue
+        
+        # Look for rating in attributes
+        if not rating:
+            for attr in ['data-rating', 'data-score', 'data-stars']:
+                value = element.get(attr)
+                if value:
+                    try:
+                        rating = float(value)
+                        break
+                    except:
+                        continue
+        
+        return rating
+
+    def scrape_reviews(self, url, num_pages=3):
+        """
+        Generic review scraper for any website
+        """
+        all_reviews = []
+        base_url = url
+        
+        try:
+            for page in range(1, num_pages + 1):
+                # Handle pagination
+                current_url = base_url
+                if page > 1:
+                    # Try common pagination patterns
+                    if '?' in base_url:
+                        current_url = f"{base_url}&page={page}"
+                    else:
+                        current_url = f"{base_url}?page={page}"
+                
+                headers = self.get_headers()
+                try:
+                    response = requests.get(current_url, headers=headers, timeout=15)
+                    response.raise_for_status()
+                    soup = BeautifulSoup(response.text, 'lxml')
+                    
+                    # Find potential review elements
+                    review_elements = self.find_review_elements(soup)
+                    
+                    if not review_elements:
+                        st.warning(f"No reviews found on page {page}. Moving to next page...")
+                        break
+                    
+                    for element in review_elements:
+                        try:
+                            # Extract review text
+                            review_text = self.extract_text(element)
+                            if not review_text:
+                                continue
+                            
+                            # Extract rating
+                            rating = self.extract_rating(element)
+                            
+                            # Extract date if available
+                            date_element = element.find(class_=re.compile(r'date|time|posted', re.I))
+                            review_date = date_element.get_text(strip=True) if date_element else None
+                            
+                            # Create review object
+                            review_data = {
+                                'text': review_text,
+                                'rating': rating if rating else None,
+                                'date': review_date
+                            }
+                            
+                            all_reviews.append(review_data)
+                        except Exception as e:
+                            continue
+                    
+                    # Progress indicator
+                    st.progress(page / num_pages)
+                    
+                    # Random delay between requests
+                    time.sleep(random.uniform(2, 4))
+                    
+                except requests.RequestException as e:
+                    st.error(f"Error fetching page {page}: {str(e)}")
+                    break
+            
+            return all_reviews
+        
+        except Exception as e:
+            st.error(f"Error in review collection: {str(e)}")
+            return []
+
+def analyze_sentiment(text):
+    try:
+        analysis = TextBlob(text)
+        return analysis.sentiment.polarity, analysis.sentiment.subjectivity
+    except Exception as e:
+        return 0, 0
+
+def get_key_phrases(reviews):
+    try:
+        all_text = ' '.join([r['text'] for r in reviews if r['text']])
+        blob = TextBlob(all_text)
+        phrases = blob.noun_phrases
+        return Counter(phrases).most_common(5)
+    except Exception as e:
+        return []
 
 def setup_nltk():
     try:
         nltk_data_dir = os.path.expanduser('~/nltk_data')
         if not os.path.exists(nltk_data_dir):
             os.makedirs(nltk_data_dir)
-        
         nltk.data.path.append(nltk_data_dir)
-        
-        try:
-            nltk.download('punkt', download_dir=nltk_data_dir)
-            nltk.download('averaged_perceptron_tagger', download_dir=nltk_data_dir)
-            return True
-        except Exception as e:
-            st.error(f"Error downloading NLTK data: {str(e)}")
-            st.info("Please run this command manually before starting the application: python -m nltk.downloader punkt averaged_perceptron_tagger")
-            return False
-            
+        nltk.download('punkt', download_dir=nltk_data_dir)
+        nltk.download('averaged_perceptron_tagger', download_dir=nltk_data_dir)
+        return True
     except Exception as e:
         st.error(f"Error setting up NLTK: {str(e)}")
         return False
 
-def get_random_headers():
-    ua = UserAgent()
-    return {
-        'User-Agent': ua.random,
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-        'Accept-Language': 'en-US,en;q=0.5',
-        'Connection': 'keep-alive',
-    }
-
-def get_trustpilot_reviews(base_url, num_pages=3):
-    """
-    Scrape multiple pages of reviews from Trustpilot
-    """
-    all_reviews = []
-    
-    try:
-        for page in range(1, num_pages + 1):
-            url = f"{base_url}?page={page}"
-            headers = get_random_headers()
-            
-            try:
-                response = requests.get(url, headers=headers, timeout=10)
-                response.raise_for_status()
-                soup = BeautifulSoup(response.text, 'lxml')
-                
-                # Find all review containers
-                review_containers = soup.find_all('article', class_=lambda x: x and 'paper' in x and 'review' in x)
-                
-                if not review_containers:
-                    st.warning(f"No reviews found on page {page}. Moving to next page...")
-                    continue
-                
-                for container in review_containers:
-                    try:
-                        # Get review text
-                        review_text = container.find('p', {'data-service-review-text-typography': True})
-                        if not review_text:
-                            review_text = container.find('p', class_=lambda x: x and 'typography' in x)
-                        
-                        # Get rating
-                        rating_div = container.find('div', {'data-service-review-rating': True})
-                        if rating_div:
-                            rating = rating_div.get('data-service-review-rating', '0')
-                        else:
-                            # Alternative method to find rating
-                            rating_img = container.find('img', alt=re.compile(r'rated \d out of 5'))
-                            if rating_img:
-                                rating = re.search(r'rated (\d)', rating_img['alt']).group(1)
-                            else:
-                                rating = '0'
-                        
-                        if review_text:
-                            all_reviews.append({
-                                'text': review_text.text.strip(),
-                                'rating': float(rating)
-                            })
-                    
-                    except Exception as e:
-                        st.warning(f"Error processing a review: {str(e)}")
-                        continue
-                
-                # Add a small delay between pages
-                time.sleep(random.uniform(1, 3))
-                
-            except requests.RequestException as e:
-                st.error(f"Error fetching page {page}: {str(e)}")
-                continue
-        
-        return all_reviews
-    
-    except Exception as e:
-        st.error(f"Error in review collection: {str(e)}")
-        return []
-
-def analyze_sentiment(text):
-    """
-    Analyze sentiment of given text using TextBlob with error handling
-    """
-    try:
-        analysis = TextBlob(text)
-        return analysis.sentiment.polarity, analysis.sentiment.subjectivity
-    except Exception as e:
-        st.warning(f"Error in sentiment analysis: {str(e)}")
-        return 0, 0
-
-def get_key_phrases(reviews):
-    """
-    Extract key phrases from reviews with error handling
-    """
-    try:
-        all_text = ' '.join([r['text'] for r in reviews])
-        blob = TextBlob(all_text)
-        phrases = blob.noun_phrases
-        return Counter(phrases).most_common(5)
-    except Exception as e:
-        st.warning(f"Error extracting key phrases: {str(e)}")
-        return []
-
 def main():
-    st.title("Review Analyzer")
+    st.title("Universal Review Analyzer")
     
     if not setup_nltk():
         st.stop()
     
+    st.markdown("""
+    ### Instructions:
+    1. Enter the company name
+    2. Paste the URL of the reviews page
+    3. Select number of pages to analyze
+    4. Click 'Analyze Reviews'
+    """)
+    
     company_name = st.text_input("Enter Company Name:")
-    url = st.text_input("Enter Trustpilot Reviews URL:")
+    url = st.text_input("Enter Reviews URL:")
     num_pages = st.slider("Number of pages to analyze", min_value=1, max_value=10, value=3)
     
     if st.button("Analyze Reviews"):
-        if url and "trustpilot.com" in url:
+        if url:
             with st.spinner(f"Analyzing reviews from {num_pages} pages... This may take a few moments..."):
-                reviews = get_trustpilot_reviews(url, num_pages)
+                scraper = ReviewScraper()
+                reviews = scraper.scrape_reviews(url, num_pages)
                 
                 if reviews:
                     # Calculate sentiments
                     for review in reviews:
-                        polarity, subjectivity = analyze_sentiment(review['text'])
-                        review['sentiment_polarity'] = polarity
-                        review['sentiment_subjectivity'] = subjectivity
+                        if review['text']:
+                            polarity, subjectivity = analyze_sentiment(review['text'])
+                            review['sentiment_polarity'] = polarity
+                            review['sentiment_subjectivity'] = subjectivity
                     
                     # Create DataFrame
                     df = pd.DataFrame(reviews)
@@ -161,19 +264,28 @@ def main():
                     st.header(f"Analysis Results for {company_name}")
                     
                     # Summary metrics
-                    col1, col2, col3, col4 = st.columns(4)
+                    col1, col2, col3 = st.columns(3)
                     with col1:
-                        avg_rating = df['rating'].mean()
-                        st.metric("Average Rating", f"{avg_rating:.1f}⭐")
-                    with col2:
                         total_reviews = len(reviews)
                         st.metric("Total Reviews", total_reviews)
-                    with col3:
+                    with col2:
                         positive_reviews = len(df[df['sentiment_polarity'] > 0])
                         st.metric("Positive Reviews", f"{positive_reviews}/{total_reviews}")
-                    with col4:
+                    with col3:
                         negative_reviews = len(df[df['sentiment_polarity'] < 0])
                         st.metric("Negative Reviews", f"{negative_reviews}/{total_reviews}")
+                    
+                    # Rating stats if available
+                    if 'rating' in df.columns and df['rating'].notna().any():
+                        st.metric("Average Rating", f"{df['rating'].mean():.1f}⭐")
+                        
+                        # Rating distribution
+                        fig2 = px.histogram(df, x="rating",
+                                          title="Rating Distribution",
+                                          labels={'rating': 'Rating'},
+                                          nbins=5,
+                                          color_discrete_sequence=['#3366cc'])
+                        st.plotly_chart(fig2)
                     
                     # Sentiment distribution plot
                     fig = px.histogram(df, x="sentiment_polarity",
@@ -181,14 +293,6 @@ def main():
                                      labels={'sentiment_polarity': 'Sentiment Score'},
                                      color_discrete_sequence=['#3366cc'])
                     st.plotly_chart(fig)
-                    
-                    # Rating distribution
-                    fig2 = px.histogram(df, x="rating",
-                                      title="Rating Distribution",
-                                      labels={'rating': 'Star Rating'},
-                                      nbins=5,
-                                      color_discrete_sequence=['#3366cc'])
-                    st.plotly_chart(fig2)
                     
                     # Key phrases
                     st.subheader("Common Themes")
@@ -201,26 +305,46 @@ def main():
                     col1, col2 = st.columns(2)
                     with col1:
                         st.write("Most Positive Review:")
-                        most_positive = max(reviews, key=lambda x: x['sentiment_polarity'])
-                        st.info(f"Rating: {most_positive['rating']}⭐\n\n{most_positive['text']}")
+                        most_positive = max(reviews, key=lambda x: x.get('sentiment_polarity', 0))
+                        review_text = most_positive.get('text', 'No text available')
+                        rating_text = f"Rating: {most_positive['rating']}⭐" if most_positive.get('rating') else ''
+                        st.info(f"{rating_text}\n\n{review_text}")
                     with col2:
                         st.write("Most Negative Review:")
-                        most_negative = min(reviews, key=lambda x: x['sentiment_polarity'])
-                        st.error(f"Rating: {most_negative['rating']}⭐\n\n{most_negative['text']}")
+                        most_negative = min(reviews, key=lambda x: x.get('sentiment_polarity', 0))
+                        review_text = most_negative.get('text', 'No text available')
+                        rating_text = f"Rating: {most_negative['rating']}⭐" if most_negative.get('rating') else ''
+                        st.error(f"{rating_text}\n\n{review_text}")
                     
                     # Show all reviews in a table
                     st.subheader("All Reviews")
+                    display_df = df.copy()
+                    for col in ['text', 'rating', 'sentiment_polarity', 'date']:
+                        if col in display_df.columns:
+                            display_df[col] = display_df[col].fillna('N/A')
+                    
                     st.dataframe(
-                        df[['text', 'rating', 'sentiment_polarity']].rename(columns={
+                        display_df[['text', 'rating', 'sentiment_polarity', 'date']].rename(columns={
                             'text': 'Review',
                             'rating': 'Rating',
-                            'sentiment_polarity': 'Sentiment'
+                            'sentiment_polarity': 'Sentiment',
+                            'date': 'Date'
                         })
                     )
+                    
+                    # Export option
+                    if st.button("Export Reviews"):
+                        csv = df.to_csv(index=False)
+                        st.download_button(
+                            label="Download CSV",
+                            data=csv,
+                            file_name=f"{company_name}_reviews.csv",
+                            mime="text/csv"
+                        )
                 else:
-                    st.error("No reviews found. This could be due to website changes or access restrictions.")
+                    st.error("No reviews found. Please check the URL and try again.")
         else:
-            st.warning("Please enter a valid Trustpilot URL")
+            st.warning("Please enter a valid URL")
 
 if __name__ == "__main__":
     main()
