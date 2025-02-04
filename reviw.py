@@ -1,51 +1,122 @@
 import streamlit as st
+import pandas as pd
 import requests
 from bs4 import BeautifulSoup
-from transformers import pipeline
+from textblob import TextBlob
+import nltk
+from nltk.tokenize import sent_tokenize
+from collections import Counter
+import plotly.express as px
+
+# Download required NLTK data
+nltk.download('punkt')
+nltk.download('averaged_perceptron_tagger')
 
 def scrape_reviews(url):
-    """Scrapes reviews from a given URL."""
+    """
+    Scrape reviews from the given URL.
+    Note: This is a basic implementation - you'll need to modify based on the specific website structure
+    """
     try:
-        response = requests.get(url, headers={"User-Agent": "Mozilla/5.0"})
-        response.raise_for_status()
+        response = requests.get(url)
         soup = BeautifulSoup(response.text, 'html.parser')
-        reviews = [review.get_text(strip=True) for review in soup.find_all('p')]
-        return reviews if reviews else ["No reviews found."]
-    except requests.exceptions.RequestException as e:
-        return [f"Error fetching reviews: {e}"]
+        # This is a placeholder - modify the selector based on the actual website
+        reviews = soup.find_all('div', class_='review-text')
+        return [review.text.strip() for review in reviews]
+    except Exception as e:
+        st.error(f"Error scraping reviews: {str(e)}")
+        return []
 
-def analyze_sentiment(reviews):
-    """Analyzes sentiment of reviews using an open-source AI model."""
-    sentiment_pipeline = pipeline("sentiment-analysis", model="distilbert-base-uncased-finetuned-sst-2-english")
-    results = sentiment_pipeline(reviews)
+def analyze_sentiment(text):
+    """
+    Analyze sentiment of given text using TextBlob
+    """
+    analysis = TextBlob(text)
+    # Return polarity (-1 to 1) and subjectivity (0 to 1)
+    return analysis.sentiment.polarity, analysis.sentiment.subjectivity
+
+def get_key_phrases(reviews):
+    """
+    Extract key phrases from reviews
+    """
+    all_text = ' '.join(reviews)
+    blob = TextBlob(all_text)
     
-    positives = [rev for rev, res in zip(reviews, results) if res['label'] == 'POSITIVE']
-    negatives = [rev for rev, res in zip(reviews, results) if res['label'] == 'NEGATIVE']
-    
-    return positives, negatives
+    # Extract noun phrases
+    phrases = blob.noun_phrases
+    # Get most common phrases
+    return Counter(phrases).most_common(5)
 
 def main():
-    st.set_page_config(page_title="Reviews Analyzer", layout="wide")
-    st.title("Reviews Analyzer - AI-powered Sentiment Analysis")
-    st.write("Enter URLs containing reviews about a company to get insights.")
+    st.title("Review Analyzer")
     
-    url = st.text_input("Enter Review URL:")
+    # Add company logo/name input
+    company_name = st.text_input("Enter Company Name:")
+    
+    # Add URL input
+    url = st.text_input("Enter Reviews URL:")
     
     if st.button("Analyze Reviews"):
         if url:
-            with st.spinner("Fetching and analyzing reviews..."):
+            with st.spinner("Analyzing reviews..."):
+                # Scrape reviews
                 reviews = scrape_reviews(url)
-                positives, negatives = analyze_sentiment(reviews)
                 
-                st.subheader("Positive Reviews:")
-                for review in positives:
-                    st.success(review)
-                
-                st.subheader("Negative Reviews:")
-                for review in negatives:
-                    st.error(review)
+                if reviews:
+                    # Calculate overall metrics
+                    sentiments = [analyze_sentiment(review) for review in reviews]
+                    polarities = [s[0] for s in sentiments]
+                    subjectivities = [s[1] for s in sentiments]
+                    
+                    # Create sentiment distribution
+                    sentiment_df = pd.DataFrame({
+                        'Polarity': polarities,
+                        'Subjectivity': subjectivities
+                    })
+                    
+                    # Display results
+                    st.header(f"Analysis Results for {company_name}")
+                    
+                    # Summary metrics
+                    col1, col2, col3 = st.columns(3)
+                    with col1:
+                        avg_polarity = sum(polarities) / len(polarities)
+                        st.metric("Average Sentiment", f"{avg_polarity:.2f}")
+                    with col2:
+                        positive_reviews = sum(1 for p in polarities if p > 0)
+                        st.metric("Positive Reviews", f"{positive_reviews}/{len(reviews)}")
+                    with col3:
+                        negative_reviews = sum(1 for p in polarities if p < 0)
+                        st.metric("Negative Reviews", f"{negative_reviews}/{len(reviews)}")
+                    
+                    # Sentiment distribution plot
+                    fig = px.histogram(sentiment_df, x="Polarity",
+                                     title="Sentiment Distribution",
+                                     labels={'Polarity': 'Sentiment Score'},
+                                     color_discrete_sequence=['#3366cc'])
+                    st.plotly_chart(fig)
+                    
+                    # Key phrases
+                    st.subheader("Key Phrases")
+                    key_phrases = get_key_phrases(reviews)
+                    for phrase, count in key_phrases:
+                        st.write(f"• {phrase}: {count} mentions")
+                    
+                    # Sample positive and negative reviews
+                    st.subheader("Sample Reviews")
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        st.write("Most Positive Review:")
+                        most_positive = max(enumerate(reviews), key=lambda x: analyze_sentiment(x[1])[0])
+                        st.info(most_positive[1])
+                    with col2:
+                        st.write("Most Negative Review:")
+                        most_negative = min(enumerate(reviews), key=lambda x: analyze_sentiment(x[1])[0])
+                        st.error(most_negative[1])
+                else:
+                    st.error("No reviews found at the provided URL")
         else:
-            st.warning("Please enter a valid URL.")
+            st.warning("Please enter a valid URL")
 
 if __name__ == "__main__":
     main()
